@@ -1,0 +1,16 @@
+# Web framework for the Vercel-hosted API endpoints
+fastapi>=0.115.0
+# HTML parsing used to recover missing article publish dates
+beautifulsoup4>=4.12.3
+# Official Google GenAI SDK for Gemini generation
+google-genai>=1.30.0
+# Modern Google auth dependency for service-account JSON credentials
+google-auth>=2.38.0
+# Google Sheets client used for sent-URL tracking
+gspread>=6.1.4
+# Typed application settings + .env loading
+pydantic-settings>=2.0.0
+# HTTP client for Slack posting and article fetches
+requests>=2.31.0
+# Tavily client for real-time search
+tavily-python>=0.5.0

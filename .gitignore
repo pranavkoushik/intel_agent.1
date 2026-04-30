@@ -1,0 +1,9 @@
+# Local secret file
+.env
+# Local Google credentials fallback for development only
+credentials.json
+# Vercel local build output
+.vercel
+# Python bytecode/cache artifacts
+__pycache__/
+*.pyc
