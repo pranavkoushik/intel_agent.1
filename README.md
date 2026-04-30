@@ -78,9 +78,13 @@ Publisher-Intel/
                                   Run BEFORE the date filter so we don't
                                   spend HTTP fetches on duplicates.
                                     ↓
-   5. Filter previously sent     load_sent_urls() reads column A of the
-                                  configured Google Sheet. Drops any URL
-                                  already posted in a prior run.
+   5. Filter previously sent     load_sent_items() reads columns A (URL) and
+                                  B (Title) of the configured Google Sheet.
+                                  filter_ledger() drops items whose URL is in
+                                  the ledger OR whose title is similar
+                                  (difflib ≥ 0.85) to a previously-sent title —
+                                  catches Google News RSS redirect URLs that
+                                  change between runs for the same article.
                                     ↓
    6. Date filter                filter_recent_news()
                                   /{current_year}/ in URL → keep
@@ -108,8 +112,9 @@ Publisher-Intel/
    10. Post to Slack             post_to_slack()
                                   3 retries with exponential backoff (2s, 4s).
                                     ↓
-   11. On HTTP 200 only:         save_sent_urls() appends to column A so
-       persist URLs to Sheet     future runs won't re-post the same items.
+   11. On HTTP 200 only:         save_sent_items() appends (URL, Title) rows
+       persist to Sheet           to columns A and B so future runs won't
+                                  re-post the same items.
                                     ↓
                         Return JSON status to Vercel
 ```
@@ -120,11 +125,11 @@ Publisher-Intel/
 
 All endpoints live in [api/index.py](api/index.py) as a single FastAPI app.
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/cron` | GET, POST | Triggers the full pipeline. Fired by Vercel cron. Optional `Authorization: Bearer <CRON_SECRET>` header. Returns 503 if any required API key is missing. |
-| `/api/health` | GET | Lightweight uptime probe. Returns `{status, service, timestamp}`. |
-| `/api/schedule` | GET | Returns today's date, weekday, batch label, publisher count, and full publisher list — without triggering the pipeline. |
+| Endpoint        | Method    | Purpose                                                                                                                                                  |
+| --------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/cron`     | GET, POST | Triggers the full pipeline. Fired by Vercel cron. Optional `Authorization: Bearer <CRON_SECRET>` header. Returns 503 if any required API key is missing. |
+| `/api/health`   | GET       | Lightweight uptime probe. Returns `{status, service, timestamp}`.                                                                                        |
+| `/api/schedule` | GET       | Returns today's date, weekday, batch label, publisher count, and full publisher list — without triggering the pipeline.                                  |
 
 ---
 
@@ -138,14 +143,14 @@ Configured in [vercel.json](vercel.json):
 
 ### Publisher coverage by weekday
 
-| Day | Coverage | Notes |
-|-----|----------|-------|
-| Monday | P0 publishers (25) | Highest-priority list |
-| Tuesday | P1/P2 Batch 1 | Rotates by ISO week |
-| Wednesday | P1/P2 Batch 2 | Rotates by ISO week |
-| Thursday | P0 publishers (25) | Same as Monday |
-| Friday | P1/P2 Batch 3 | Rotates by ISO week |
-| Sat / Sun | Skipped | No cron fires |
+| Day       | Coverage           | Notes                 |
+| --------- | ------------------ | --------------------- |
+| Monday    | P0 publishers (25) | Highest-priority list |
+| Tuesday   | P1/P2 Batch 1      | Rotates by ISO week   |
+| Wednesday | P1/P2 Batch 2      | Rotates by ISO week   |
+| Thursday  | P0 publishers (25) | Same as Monday        |
+| Friday    | P1/P2 Batch 3      | Rotates by ISO week   |
+| Sat / Sun | Skipped            | No cron fires         |
 
 The full P1/P2 list is sorted alphabetically and split into 3 batches.
 Which alphabetical slice runs on Tue/Wed/Fri rotates by ISO week number,
@@ -161,30 +166,36 @@ names are case-insensitive when reading from the environment.
 
 ### Required
 
-| Variable | Purpose |
-|----------|---------|
-| `SLACK_WEBHOOK_URL` | Incoming webhook for the digest channel |
-| `GEMINI_API_KEY` | Authentication for Google GenAI SDK |
-| `TAVILY_API_KEY` | Authentication for Tavily search |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Service-account JSON blob for Sheets access (Vercel) |
+---
+
+| Variable                               | Purpose                                                  |
+| -------------------------------------- | -------------------------------------------------------- |
+| `SLACK_WEBHOOK_URL`                    | Incoming webhook for the digest channel                  |
+| `GEMINI_API_KEY`                       | Authentication for Google GenAI SDK                      |
+| `TAVILY_API_KEY`                       | Authentication for Tavily search                         |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`          | Service-account JSON blob for Sheets access (Vercel)     |
+| ****************\_\_\_**************** | **************************\_\_************************** |
 
 ### Optional (with defaults)
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Which Gemini model generates the brief |
-| `GOOGLE_SHEET_NAME` | `Joveo Intel Logs` | Spreadsheet name for the URL ledger |
-| `GOOGLE_WORKSHEET_NAME` | `Sheet1` | Tab name inside the spreadsheet |
-| `TAVILY_MAX_RESULTS` | `5` | General news results per publisher per run |
-| `TAVILY_LINKEDIN_MAX_RESULTS` | `3` | LinkedIn-restricted results per publisher per run |
-| `GOOGLE_NEWS_MAX_RESULTS` | `3` | Google News RSS results per publisher (set `0` to disable) |
-| `TAVILY_SEARCH_DEPTH` | `advanced` | Tavily search mode |
-| `NEWS_LOOKBACK_DAYS` | `7` | Date window for the lookback filter |
-| `SLACK_RETRIES` | `3` | Number of Slack post attempts |
-| `SLACK_TIMEOUT` | `20` | Seconds per Slack request |
-| `TITLE_SIMILARITY_THRESHOLD` | `0.85` | Higher = stricter (fewer dedup drops) |
-| `CRON_SECRET` | _(unset)_ | If set, `/api/cron` requires `Authorization: Bearer <value>` |
-| `LOG_LEVEL` | `INFO` | Standard Python logging level |
+---
+
+| Variable                                   | Default                          | Purpose                                                                  |
+| ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------ |
+| `GEMINI_MODEL`                             | `gemini-2.5-flash-lite`          | Which Gemini model generates the brief                                   |
+| `GOOGLE_SHEET_NAME`                        | `Joveo Intel Logs`               | Spreadsheet name for the URL ledger                                      |
+| `GOOGLE_WORKSHEET_NAME`                    | `Sheet1`                         | Tab name inside the spreadsheet                                          |
+| `TAVILY_MAX_RESULTS`                       | `5`                              | General news results per publisher per run                               |
+| `TAVILY_LINKEDIN_MAX_RESULTS`              | `3`                              | LinkedIn-restricted results per publisher per run                        |
+| `GOOGLE_NEWS_MAX_RESULTS`                  | `3`                              | Google News RSS results per publisher (set `0` to disable)               |
+| `TAVILY_SEARCH_DEPTH`                      | `advanced`                       | Tavily search mode                                                       |
+| `NEWS_LOOKBACK_DAYS`                       | `7`                              | Date window for the lookback filter                                      |
+| `SLACK_RETRIES`                            | `3`                              | Number of Slack post attempts                                            |
+| `SLACK_TIMEOUT`                            | `20`                             | Seconds per Slack request                                                |
+| `TITLE_SIMILARITY_THRESHOLD`               | `0.85`                           | Higher = stricter (fewer dedup drops)                                    |
+| `CRON_SECRET`                              | _(unset)_                        | If set, `/api/cron` requires `Authorization: Bearer <value>`             |
+| `LOG_LEVEL`                                | `INFO`                           | Standard Python logging level                                            |
+| ********************\_******************** | ************\_\_\_\_************ | ********************************\_\_\_\_******************************** |
 
 ---
 
@@ -233,6 +244,7 @@ deployed function.
 ## Key design decisions
 
 ### Critical events bypass any ranking
+
 The pipeline used to apply a top-N keyword-scoring cap that could rank
 out high-impact items (e.g., a German-language insolvency story scoring
 zero on English-only keywords). The current pipeline detects existential
@@ -243,29 +255,34 @@ context. A `MANDATORY` rule in the prompt then guarantees they make the
 final 5-item digest.
 
 ### No keyword-based ranking cap
+
 All items that survive the date filter and dedup pass go to Gemini. The
 extra context is cheap (Gemini handles ranking well, and per-run token
 cost is negligible) and removes a class of "important news ranked out
 before Gemini saw it" failures.
 
 ### Title-similarity dedup
+
 Same story across multiple outlets used to burn 3+ slots in the digest.
 A second dedup pass uses `difflib.SequenceMatcher` on normalized titles
 with a configurable threshold (default `0.85`) so duplicate stories
 collapse to one item.
 
 ### Sent URLs persist only after a successful Slack post
+
 If Slack delivery fails, no URLs are written to the Sheet. The next run
 can therefore retry the same items rather than treating them as already
 sent.
 
 ### Multilingual Tavily query
+
 The Tavily query string covers layoff/insolvency/hiring/partnership
 phrases in eight languages so European publishers (Joblift, Stellenanzeigen,
 Pracuj.pl, etc.) surface non-English coverage that English-only queries
 miss.
 
 ### LinkedIn coverage without scraping
+
 Direct scraping of LinkedIn would violate ToS and get IPs banned within
 hours. Instead, the bot runs a second Tavily query per publisher restricted
 to `site:linkedin.com/posts`, `/pulse`, and `/company` paths. Tavily makes
@@ -275,6 +292,7 @@ public articles) without any auth-walled content. The dedup step collapses
 any overlap when the same story is also covered by mainstream press.
 
 ### Cross-source redundancy via Google News RSS
+
 Tavily is the primary news source, but a single search vendor is a single
 point of failure. Google News RSS is queried in parallel as a free
 redundancy layer (no API key required) — different ranking and indexing

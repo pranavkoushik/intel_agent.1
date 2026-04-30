@@ -70,25 +70,57 @@ def _get_sheet(settings: Settings):
     return workbook.sheet1
 
 
-def load_sent_urls(settings: Settings) -> set[str]:
+def load_sent_items(settings: Settings) -> tuple[set[str], list[str]]:
+    """Load the ledger as (sent URLs, normalized sent titles).
+
+    Titles are returned pre-normalized so the ledger filter can compare with
+    `difflib.SequenceMatcher` directly.
+    """
     try:
         sheet = _get_sheet(settings)
-        return set(sheet.col_values(1))
+        urls = set(sheet.col_values(1))
+        titles = [normalize_title(t) for t in sheet.col_values(2) if t]
+        return urls, titles
     except Exception:
-        logger.exception("Failed to load sent URLs from Sheets")
-        return set()
+        logger.exception("Failed to load sent items from Sheets")
+        return set(), []
 
 
-def save_sent_urls(urls: list[str], settings: Settings) -> None:
+def save_sent_items(items: list[tuple[str, str]], settings: Settings) -> None:
+    """Append (url, title) rows to the ledger, skipping URLs already present."""
     try:
         sheet = _get_sheet(settings)
         existing = set(sheet.col_values(1))
-        new_urls = [u for u in urls if u not in existing]
-        if new_urls:
-            sheet.append_rows([[u] for u in new_urls])
-            logger.info("Saved %d new URLs to Sheets", len(new_urls))
+        new_rows = [[url, title] for url, title in items if url and url not in existing]
+        if new_rows:
+            sheet.append_rows(new_rows)
+            logger.info("Saved %d new items to Sheets", len(new_rows))
     except Exception:
-        logger.exception("Failed to save sent URLs to Sheets")
+        logger.exception("Failed to save sent items to Sheets")
+
+
+def filter_ledger(
+    news: list[dict],
+    sent_urls: set[str],
+    sent_titles: list[str],
+    settings: Settings,
+) -> list[dict]:
+    """Drop items whose URL matches the ledger or whose title is near-duplicate
+    of a previously-sent title. Title check protects against Google News RSS
+    redirect URLs that change between runs even for the same article."""
+    threshold = settings.title_similarity_threshold
+    fresh: list[dict] = []
+    for item in news:
+        if item.get("url") in sent_urls:
+            continue
+        title_norm = normalize_title(item.get("title", ""))
+        if title_norm and any(
+            difflib.SequenceMatcher(None, title_norm, t).ratio() >= threshold
+            for t in sent_titles
+        ):
+            continue
+        fresh.append(item)
+    return fresh
 
 
 # ── Tavily news fetch ────────────────────────────────────────────────────────

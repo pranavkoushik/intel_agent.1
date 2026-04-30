@@ -12,12 +12,13 @@ from .services import (
     deduplicate_news,
     fetch_google_news_rss,
     fetch_news,
+    filter_ledger,
     filter_recent_news,
     generate_brief,
-    load_sent_urls,
+    load_sent_items,
     post_to_slack,
     quick_filter,
-    save_sent_urls,
+    save_sent_items,
     split_critical,
 )
 
@@ -54,8 +55,8 @@ def run_publisher_intel() -> dict:
     news = deduplicate_news(news, settings)
     logger.info("After dedup: %d", len(news))
 
-    sent_urls = load_sent_urls(settings)
-    news = [item for item in news if item.get("url") not in sent_urls]
+    sent_urls, sent_titles = load_sent_items(settings)
+    news = filter_ledger(news, sent_urls, sent_titles, settings)
     logger.info("After ledger filter: %d", len(news))
 
     news = filter_recent_news(news, settings)
@@ -98,7 +99,10 @@ def run_publisher_intel() -> dict:
     if success:
         # Persist sent URLs only after Slack confirms delivery so failed posts
         # can be retried on the next run instead of being marked as complete.
-        save_sent_urls([item.get("url") for item in news if item.get("url")], settings)
+        save_sent_items(
+            [(item.get("url"), item.get("title", "")) for item in news if item.get("url")],
+            settings,
+        )
         logger.info("Run complete: Slack delivery succeeded")
     else:
         logger.error("Run complete: Slack delivery failed")
