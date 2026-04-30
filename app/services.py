@@ -135,44 +135,44 @@ _RSS_LANGUAGE_QUERIES: list[tuple[str, dict[str, str], str]] = [
     (
         "en",
         {"hl": "en-US", "gl": "US", "ceid": "US:en"},
-        '"{pub}" (insolvency OR bankruptcy OR layoffs OR funding OR acquisition '
+        'intitle:"{pub}" (insolvency OR bankruptcy OR layoffs OR funding OR acquisition '
         "OR merger OR launch OR hiring OR partnership OR closure OR shutdown "
         'OR lawsuit OR "data breach" OR resigns)',
     ),
     (
         "de",
         {"hl": "de", "gl": "DE", "ceid": "DE:de"},
-        '"{pub}" (insolvenz OR pleite OR entlassungen OR stellenabbau OR '
+        'intitle:"{pub}" (insolvenz OR pleite OR entlassungen OR stellenabbau OR '
         "übernahme OR fusion OR einstellungen OR partnerschaft OR kooperation)",
     ),
     (
         "fr",
         {"hl": "fr", "gl": "FR", "ceid": "FR:fr"},
-        '"{pub}" (faillite OR licenciements OR "plan social" OR rachat OR '
+        'intitle:"{pub}" (faillite OR licenciements OR "plan social" OR rachat OR '
         "fusion OR embauche OR partenariat OR lancement)",
     ),
     (
         "es",
         {"hl": "es", "gl": "ES", "ceid": "ES:es"},
-        '"{pub}" (quiebra OR despidos OR adquisición OR fusión OR contratación '
+        'intitle:"{pub}" (quiebra OR despidos OR adquisición OR fusión OR contratación '
         "OR alianza OR lanzamiento)",
     ),
     (
         "it",
         {"hl": "it", "gl": "IT", "ceid": "IT:it"},
-        '"{pub}" (fallimento OR licenziamenti OR acquisizione OR fusione OR '
+        'intitle:"{pub}" (fallimento OR licenziamenti OR acquisizione OR fusione OR '
         "assunzioni OR partnership OR lancio)",
     ),
     (
         "nl",
         {"hl": "nl", "gl": "NL", "ceid": "NL:nl"},
-        '"{pub}" (faillissement OR ontslagen OR overname OR fusie OR '
+        'intitle:"{pub}" (faillissement OR ontslagen OR overname OR fusie OR '
         "aanwerving OR samenwerking)",
     ),
     (
         "pl",
         {"hl": "pl", "gl": "PL", "ceid": "PL:pl"},
-        '"{pub}" (upadłość OR zwolnienia OR przejęcie OR fuzja OR zatrudnia '
+        'intitle:"{pub}" (upadłość OR zwolnienia OR przejęcie OR fuzja OR zatrudnia '
         "OR partnerstwo)",
     ),
 ]
@@ -514,6 +514,17 @@ You are the Joveo Publisher Intelligence Agent.
 
 Today is {today}.
 
+ALLOWED PUBLISHERS (CRITICAL — read first):
+You may ONLY select items where the headline is genuinely ABOUT one of these
+publishers as the primary subject:
+{publishers_list}
+
+Discard any item where the publisher name is incidental — e.g. a tangentially-
+related company with a similar name, a bank, a sports league, a movie, a
+historical reference (a year like "1840"), or a person who happens to share
+the name. If unsure, DISCARD. Off-topic items do not become eligible just
+because they sound dramatic.
+
 Below is REAL-TIME news data collected from the web:
 
 {context}
@@ -540,7 +551,7 @@ For each item:
 [One sentence insight explaining what happened + why it matters to Joveo]
 
 🔗 <URL|Read article>
-
+(Add a blank line)
 (Repeat up to 5 items, each separated by a blank line)
 
 ━━━━━━━━━━━━━━━━━━
@@ -572,6 +583,8 @@ RULES:
 - No hallucination
 - Max 5 items (Only important ones) - give less if 5 are not very important
 - One sentence each
+- Each selected item MUST be primarily about a publisher in the ALLOWED
+  PUBLISHERS list above. If no items qualify, return fewer than 5 — or none.
 
 STRICT OUTPUT RULES:
 - Output MUST start directly with: :satellite_antenna: *Joveo Publisher Intel*
@@ -590,6 +603,7 @@ IMPORTANT:
 def generate_brief(
     news_data: list[dict],
     coverage_label: str,
+    publishers: list[str],
     settings: Settings,
 ) -> str | None:
     today = datetime.date.today().strftime("%A, %d %B %Y")
@@ -599,11 +613,13 @@ def generate_brief(
         f"CONTENT: {item.get('content', 'N/A')[:300]}"
         for item in news_data
     )
+    publishers_list = ", ".join(publishers)
 
     prompt = BRIEF_PROMPT_TEMPLATE.format(
         today=today,
         context=context,
         coverage_label=coverage_label,
+        publishers_list=publishers_list,
         lookback_days=settings.news_lookback_days,
     )
 

@@ -81,7 +81,7 @@ def run_publisher_intel() -> dict:
         }
 
     logger.info("Generating brief…")
-    brief = generate_brief(news, coverage_label, settings)
+    brief = generate_brief(news, coverage_label, publishers, settings)
 
     if not brief:
         logger.warning("No brief generated — skipping Slack post")
