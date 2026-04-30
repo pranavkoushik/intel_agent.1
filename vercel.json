@@ -7,6 +7,10 @@
       "excludeFiles": "{__pycache__/**,*.pyc,credentials.json}"
     }
   },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/", "destination": "/api/index.py" }
+  ],
   "crons": [
     {
       "path": "/api/cron",

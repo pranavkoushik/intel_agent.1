@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Joveo Publisher Intelligence Agent")
 
 
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "Joveo Publisher Intelligence Agent",
+        "status": "running",
+        "endpoints": ["/api/health", "/api/schedule", "/api/cron"],
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
