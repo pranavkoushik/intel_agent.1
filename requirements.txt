@@ -12,5 +12,3 @@ gspread>=6.1.4
 pydantic-settings>=2.0.0
 # HTTP client for Slack posting and article fetches
 requests>=2.31.0
-# Tavily client for real-time search
-tavily-python>=0.5.0

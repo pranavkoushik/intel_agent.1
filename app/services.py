@@ -1,4 +1,4 @@
-"""Service layer: Tavily search, Gemini analysis, Slack delivery, Sheets tracking."""
+"""Service layer: Google News RSS fetch, Gemini analysis, Slack delivery, Sheets tracking."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ import requests
 from bs4 import BeautifulSoup
 from google import genai
 from google.oauth2.service_account import Credentials
-from tavily import TavilyClient
 
 from .config import Settings
 
@@ -123,114 +122,70 @@ def filter_ledger(
     return fresh
 
 
-# ── Tavily news fetch ────────────────────────────────────────────────────────
-
-# Themed boolean groups covering layoffs, insolvency, hiring/expansion, and
-# partnerships/launches across English plus six European languages. Used for
-# the general web news search.
-_NEWS_QUERY_TEMPLATE = """("{pub}") AND (
-  ("layoffs" OR "laid off" OR "job cuts" OR "workforce reduction" OR "headcount reduction" OR "restructuring" OR "redundancies" OR "downsizing" OR "entlassungen" OR "stellenabbau" OR "personalabbau" OR "licenziamenti" OR "despidos" OR "reducciones de plantilla" OR "suppressions de postes" OR "plan social" OR "zwolnienia" OR "redukcja zatrudnienia")
-  OR
-  ("insolvency" OR "bankruptcy" OR "insolvent" OR "administration" OR "restructuring" OR "chapter 11" OR "liquidation" OR "receivership" OR "insolvenz" OR "pleite" OR "zahlungsunfähig" OR "faillite" OR "redressement judiciaire" OR "cessation de paiements" OR "quiebra" OR "insolvencia" OR "concurso de acreedores" OR "fallimento" OR "amministrazione straordinaria" OR "faillissement" OR "bankructwo" OR "upadłość")
-  OR
-  ("hiring" OR "expansion" OR "growth" OR "opens office" OR "new market" OR "scale-up" OR "recruiting" OR "hiring surge" OR "headcount growth" OR "expands" OR "expanding" OR "einstellung" OR "einstellungen" OR "wachstum" OR "embauche" OR "recrutement" OR "croissance" OR "contratación" OR "expansión" OR "crecimiento" OR "assunzioni" OR "crescita" OR "aanwerving" OR "groei" OR "zatrudnia" OR "wzrost")
-  OR
-  ("partnership" OR "partnered" OR "collaboration" OR "alliance" OR "integration" OR "launch" OR "product launch" OR "new feature" OR "new platform" OR "rollout" OR "debut" OR "strategic partnership" OR "partnerschaft" OR "kooperation" OR "produkteinführung" OR "lancement" OR "partenariat" OR "intégration" OR "lanzamiento" OR "alianza" OR "asociación" OR "integración" OR "lancio" OR "partnership strategica" OR "integrazione" OR "samenwerking" OR "partnerschap" OR "integratie" OR "współpraca" OR "partnerstwo" OR "integracja")
-)"""
-
-# LinkedIn-restricted query — Tavily proxies the lookup so the user's IP is
-# never exposed to LinkedIn. Only public, Google-indexed posts/articles
-# (linkedin.com/posts, /pulse, /company) are reachable this way; auth-walled
-# feed content is not. Multilingual signal terms cover EU-publisher CEOs and
-# company pages that often post in their local language (DE/FR/ES/IT/NL/PL).
-_LINKEDIN_QUERY_TEMPLATE = (
-    '"{pub}" '
-    "(insolvency OR bankruptcy OR layoffs OR funding OR acquisition OR "
-    "merger OR launch OR hiring OR partnership OR announcement OR update OR "
-    # German
-    "insolvenz OR pleite OR entlassungen OR stellenabbau OR übernahme OR "
-    # French
-    "faillite OR licenciements OR \"plan social\" OR rachat OR "
-    # Spanish
-    "quiebra OR despidos OR adquisición OR "
-    # Italian
-    "fallimento OR licenziamenti OR acquisizione OR "
-    # Dutch
-    "faillissement OR ontslagen OR overname OR "
-    # Polish
-    "upadłość OR zwolnienia OR przejęcie) "
-    "(site:linkedin.com/posts OR site:linkedin.com/pulse OR "
-    "site:linkedin.com/company)"
-)
-
-
-def fetch_news(publishers: list[str], settings: Settings) -> list[dict]:
-    """Per publisher, run two Tavily searches and merge the results.
-
-    1. General news search (multilingual themed boolean across the open web).
-    2. LinkedIn-restricted search (public LinkedIn posts/articles indexed by
-       Google). Tavily handles all outbound HTTP, so the caller's IP is never
-       exposed to LinkedIn.
-
-    Both result sets feed into the same downstream pipeline (split_critical,
-    filter_recent_news, deduplicate_news), so a story announced on LinkedIn
-    and covered by a news outlet will collapse to a single item via the
-    title-similarity dedup pass.
-    """
-    tavily = TavilyClient(api_key=settings.tavily_api_key)
-    all_results: list[dict] = []
-
-    for pub in publishers:
-        # 1. General web news
-        try:
-            news_results = tavily.search(
-                query=_NEWS_QUERY_TEMPLATE.format(pub=pub),
-                search_depth=settings.tavily_search_depth,
-                max_results=settings.tavily_max_results,
-                days=settings.news_lookback_days,
-            )
-            news_items = news_results.get("results", [])
-            all_results.extend(news_items)
-            logger.info("Fetched %d news results for %s", len(news_items), pub)
-        except Exception:
-            logger.exception("News search failed for %s", pub)
-            news_items = []
-
-        # 2. LinkedIn-restricted (public posts/articles only)
-        try:
-            li_results = tavily.search(
-                query=_LINKEDIN_QUERY_TEMPLATE.format(pub=pub),
-                search_depth=settings.tavily_search_depth,
-                max_results=settings.tavily_linkedin_max_results,
-                days=settings.news_lookback_days,
-            )
-            li_items = li_results.get("results", [])
-            all_results.extend(li_items)
-            logger.info("Fetched %d LinkedIn results for %s", len(li_items), pub)
-        except Exception:
-            logger.exception("LinkedIn search failed for %s", pub)
-
-    return all_results
-
-
-# ── Google News RSS (free redundancy layer) ──────────────────────────────────
+# ── Google News RSS news fetch (sole source) ─────────────────────────────────
 
 _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
-_GOOGLE_NEWS_QUERY_TEMPLATE = (
-    '"{pub}" '
-    "(insolvency OR bankruptcy OR layoffs OR funding OR acquisition OR "
-    "merger OR launch OR hiring OR partnership OR closure OR shutdown OR "
-    "lawsuit OR \"data breach\" OR resigns)"
-)
+
+# Per-language RSS query specs. Each entry pairs a region-targeted set of
+# Google News parameters (hl/gl/ceid drive language + region of results) with
+# a native-tongue keyword boolean. Running one sub-query per language gives EU
+# publishers' local-language coverage that an English-only query misses, and
+# Google News RSS is free so the extra fan-out has no per-call cost.
+_RSS_LANGUAGE_QUERIES: list[tuple[str, dict[str, str], str]] = [
+    (
+        "en",
+        {"hl": "en-US", "gl": "US", "ceid": "US:en"},
+        '"{pub}" (insolvency OR bankruptcy OR layoffs OR funding OR acquisition '
+        "OR merger OR launch OR hiring OR partnership OR closure OR shutdown "
+        'OR lawsuit OR "data breach" OR resigns)',
+    ),
+    (
+        "de",
+        {"hl": "de", "gl": "DE", "ceid": "DE:de"},
+        '"{pub}" (insolvenz OR pleite OR entlassungen OR stellenabbau OR '
+        "übernahme OR fusion OR einstellungen OR partnerschaft OR kooperation)",
+    ),
+    (
+        "fr",
+        {"hl": "fr", "gl": "FR", "ceid": "FR:fr"},
+        '"{pub}" (faillite OR licenciements OR "plan social" OR rachat OR '
+        "fusion OR embauche OR partenariat OR lancement)",
+    ),
+    (
+        "es",
+        {"hl": "es", "gl": "ES", "ceid": "ES:es"},
+        '"{pub}" (quiebra OR despidos OR adquisición OR fusión OR contratación '
+        "OR alianza OR lanzamiento)",
+    ),
+    (
+        "it",
+        {"hl": "it", "gl": "IT", "ceid": "IT:it"},
+        '"{pub}" (fallimento OR licenziamenti OR acquisizione OR fusione OR '
+        "assunzioni OR partnership OR lancio)",
+    ),
+    (
+        "nl",
+        {"hl": "nl", "gl": "NL", "ceid": "NL:nl"},
+        '"{pub}" (faillissement OR ontslagen OR overname OR fusie OR '
+        "aanwerving OR samenwerking)",
+    ),
+    (
+        "pl",
+        {"hl": "pl", "gl": "PL", "ceid": "PL:pl"},
+        '"{pub}" (upadłość OR zwolnienia OR przejęcie OR fuzja OR zatrudnia '
+        "OR partnerstwo)",
+    ),
+]
 
 
 def fetch_google_news_rss(publishers: list[str], settings: Settings) -> list[dict]:
-    """Cross-source redundancy via Google News RSS — free, no API key.
+    """Per publisher, run one Google News RSS query per supported language.
 
-    Different ranking and indexing than Tavily, so this catches stories Tavily
-    can miss (and vice versa). Results are returned in the same dict shape as
-    Tavily so the merged list flows through the existing pipeline unchanged;
-    title-similarity dedup collapses overlap with Tavily/LinkedIn coverage.
+    Free, no API key. Each sub-query targets a specific language/region via
+    Google News' hl/gl/ceid parameters so we surface coverage from the local
+    press of each EU market. Results all flow into the same downstream
+    pipeline (split_critical, filter_recent_news, deduplicate_news), so cross-
+    language coverage of the same story collapses on title similarity.
     """
     if settings.google_news_max_results <= 0:
         return []
@@ -241,66 +196,71 @@ def fetch_google_news_rss(publishers: list[str], settings: Settings) -> list[dic
     all_results: list[dict] = []
 
     for pub in publishers:
-        query = _GOOGLE_NEWS_QUERY_TEMPLATE.format(pub=pub)
-        params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
-        url = f"{_GOOGLE_NEWS_RSS_URL}?{urllib.parse.urlencode(params)}"
+        for lang, lang_params, query_template in _RSS_LANGUAGE_QUERIES:
+            query = query_template.format(pub=pub)
+            params = {"q": query, **lang_params}
+            url = f"{_GOOGLE_NEWS_RSS_URL}?{urllib.parse.urlencode(params)}"
 
-        try:
-            response = requests.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; JoveoIntelBot/1.0)"},
-                timeout=20,
-            )
-            if response.status_code != 200:
-                logger.warning(
-                    "Google News RSS returned %d for %s",
-                    response.status_code, pub,
+            try:
+                response = requests.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; JoveoIntelBot/1.0)"
+                    },
+                    timeout=20,
                 )
-                continue
-
-            root = ET.fromstring(response.text)
-            channel = root.find("channel")
-            if channel is None:
-                continue
-
-            count = 0
-            for item in channel.findall("item"):
-                title_el = item.find("title")
-                link_el = item.find("link")
-                desc_el = item.find("description")
-                pub_date_el = item.find("pubDate")
-
-                if title_el is None or link_el is None:
+                if response.status_code != 200:
+                    logger.warning(
+                        "Google News RSS returned %d for %s [%s]",
+                        response.status_code, pub, lang,
+                    )
                     continue
 
-                # Filter to lookback window using RSS pubDate (RFC 822 format).
-                published_iso: str | None = None
-                if pub_date_el is not None and pub_date_el.text:
-                    try:
-                        dt = parsedate_to_datetime(pub_date_el.text)
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.timezone.utc)
-                        if dt < cutoff:
-                            continue
-                        published_iso = dt.isoformat()
-                    except (TypeError, ValueError):
-                        # If we can't parse the date, let filter_recent_news
-                        # handle it downstream rather than dropping silently.
-                        pass
+                root = ET.fromstring(response.text)
+                channel = root.find("channel")
+                if channel is None:
+                    continue
 
-                all_results.append({
-                    "title": title_el.text or "",
-                    "url": link_el.text or "",
-                    "content": (desc_el.text or "") if desc_el is not None else "",
-                    "published_date": published_iso,
-                })
-                count += 1
-                if count >= settings.google_news_max_results:
-                    break
+                count = 0
+                for item in channel.findall("item"):
+                    title_el = item.find("title")
+                    link_el = item.find("link")
+                    desc_el = item.find("description")
+                    pub_date_el = item.find("pubDate")
 
-            logger.info("Fetched %d Google News results for %s", count, pub)
-        except Exception:
-            logger.exception("Google News RSS failed for %s", pub)
+                    if title_el is None or link_el is None:
+                        continue
+
+                    # Filter to lookback window using RSS pubDate (RFC 822 format).
+                    published_iso: str | None = None
+                    if pub_date_el is not None and pub_date_el.text:
+                        try:
+                            dt = parsedate_to_datetime(pub_date_el.text)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=datetime.timezone.utc)
+                            if dt < cutoff:
+                                continue
+                            published_iso = dt.isoformat()
+                        except (TypeError, ValueError):
+                            # If we can't parse the date, let filter_recent_news
+                            # handle it downstream rather than dropping silently.
+                            pass
+
+                    all_results.append({
+                        "title": title_el.text or "",
+                        "url": link_el.text or "",
+                        "content": (desc_el.text or "") if desc_el is not None else "",
+                        "published_date": published_iso,
+                    })
+                    count += 1
+                    if count >= settings.google_news_max_results:
+                        break
+
+                logger.info(
+                    "Fetched %d Google News results for %s [%s]", count, pub, lang,
+                )
+            except Exception:
+                logger.exception("Google News RSS failed for %s [%s]", pub, lang)
 
     return all_results
 
@@ -579,14 +539,14 @@ For each item:
 [Impact Emoji] *[Publisher Name]*
 [One sentence insight explaining what happened + why it matters to Joveo]
 
-Source | 🔗 <URL>
+🔗 <URL|Read article>
 
 (Repeat up to 5 items, each separated by a blank line)
 
 ━━━━━━━━━━━━━━━━━━
 
 📊 _Coverage: {coverage_label}_
-🔎 _Source: Tavily_
+🔎 _Source: Google News RSS_
 
 ---
 
@@ -599,7 +559,8 @@ IMPACT TAG RULES:
 ---
 
 FORMATTING RULES:
-- Always include the URL as a clickable link using 🔗
+- Render the URL as a Slack hyperlink using EXACTLY this format: <URL|Read article>
+  (e.g. <https://example.com/story|Read article>). Do NOT output the raw URL.
 - Keep each item visually separated
 - Keep it clean and scannable
 - Ensure there is a blank line between each item

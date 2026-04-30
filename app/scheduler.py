@@ -11,7 +11,6 @@ from .publishers import get_todays_publishers
 from .services import (
     deduplicate_news,
     fetch_google_news_rss,
-    fetch_news,
     filter_ledger,
     filter_recent_news,
     generate_brief,
@@ -39,13 +38,8 @@ def run_publisher_intel() -> dict:
 
     logger.info("Schedule: %s (%d publishers)", label, len(publishers))
 
-    tavily_items = fetch_news(publishers, settings)
-    google_items = fetch_google_news_rss(publishers, settings)
-    news = tavily_items + google_items
-    logger.info(
-        "Fetched %d raw items (tavily=%d, google=%d)",
-        len(news), len(tavily_items), len(google_items),
-    )
+    news = fetch_google_news_rss(publishers, settings)
+    logger.info("Fetched %d raw items from Google News RSS", len(news))
 
     news = quick_filter(news)
     logger.info("After quick_filter: %d", len(news))
@@ -75,7 +69,7 @@ def run_publisher_intel() -> dict:
             f"📡 Joveo Publisher Intel - {today_str}\n\n"
             f"No impactful updates relevant to Joveo were found for "
             f"{coverage_label} within the last few days.\n\n"
-            f"Researched via: Tavily\n"
+            f"Researched via: Google News RSS\n"
             f"Coverage today: {coverage_label}"
         )
         post_to_slack(message, settings)

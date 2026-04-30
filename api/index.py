@@ -23,16 +23,6 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Joveo Publisher Intelligence Agent")
 
 
-@app.get("/")
-def root() -> dict:
-    return {
-        "service": "Joveo Publisher Intelligence Agent",
-        "status": "running",
-        "endpoints": ["/api/health", "/api/schedule", "/api/cron"],
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-
-
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -74,8 +64,6 @@ def cron(authorization: str | None = Header(default=None)) -> dict:
         missing.append("SLACK_WEBHOOK_URL")
     if not settings.gemini_api_key:
         missing.append("GEMINI_API_KEY")
-    if not settings.tavily_api_key:
-        missing.append("TAVILY_API_KEY")
     if missing:
         raise HTTPException(
             status_code=503,

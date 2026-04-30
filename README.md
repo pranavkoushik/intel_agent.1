@@ -2,9 +2,10 @@
 
 Automated weekday intelligence workflow for Joveo. Researches recent
 publisher-related developments (layoffs, insolvency, funding, M&A,
-partnerships, product launches), generates an AI summary with Gemini,
-posts a curated digest to Slack, and remembers which URLs have already
-been delivered so they are not posted again.
+partnerships, product launches) via multilingual Google News RSS,
+generates an AI summary with Gemini, posts a curated digest to Slack,
+and remembers which URLs have already been delivered so they are not
+posted again.
 
 ---
 
@@ -27,7 +28,7 @@ Publisher-Intel/
 │   ├── __init__.py         Package init + logging setup
 │   ├── config.py           pydantic-settings Settings class
 │   ├── publishers.py       P0 / P1 / P2 lists + weekday rotation
-│   ├── services.py         Tavily, Gemini, Slack, Sheets, dedup, filtering
+│   ├── services.py         Google News RSS, Gemini, Slack, Sheets, dedup, filtering
 │   └── scheduler.py        run_publisher_intel() — end-to-end orchestration
 ├── brief.py                Local CLI entrypoint (python brief.py)
 ├── requirements.txt        Python dependencies
@@ -54,27 +55,27 @@ Publisher-Intel/
                                     rotating P1/P2 batch (ISO week % 3)
                                   Sat/Sun → exit with skipped status
                                     ↓
-   2. News fetch                 app/services.py
-                                  Per publisher, THREE sources are queried:
-                                  (a) Tavily — general web news, multilingual
-                                      themed boolean (max 5).
-                                  (b) Tavily — LinkedIn-restricted query for
-                                      public posts/articles indexed by Google
-                                      (max 3). Tavily proxies the request so
-                                      your IP is never exposed to LinkedIn.
-                                  (c) Google News RSS — free redundancy layer
-                                      with different ranking from Tavily
-                                      (max 3). Catches stories Tavily misses.
-                                  All three merge; dedup downstream collapses
-                                  overlap via title-similarity (0.85).
+   2. News fetch                 app/services.py — Google News RSS only
+                                  Per publisher, ONE RSS sub-query is fired
+                                  per supported language (EN/DE/FR/ES/IT/NL/PL),
+                                  each targeting Google News' hl/gl/ceid for
+                                  that locale and using a native-tongue boolean
+                                  of layoffs/insolvency/funding/M&A/partnership
+                                  terms. Per-language cap is GOOGLE_NEWS_MAX_RESULTS
+                                  (default 5), so up to ~35 raw items per
+                                  publisher before downstream dedup. Free, no
+                                  API key. Title-similarity dedup downstream
+                                  collapses cross-language overlap of the
+                                  same story (threshold 0.75).
                                     ↓
    3. Drop stale-year URLs       quick_filter()
                                     ↓
    4. Two-phase dedup            deduplicate_news()
                                   Pass 1: URL-exact match
                                   Pass 2: title-similarity (difflib,
-                                    threshold 0.85) drops the same story
-                                    republished across outlets.
+                                    threshold 0.75) drops the same story
+                                    republished across outlets and across
+                                    languages.
                                   Run BEFORE the date filter so we don't
                                   spend HTTP fetches on duplicates.
                                     ↓
@@ -82,13 +83,13 @@ Publisher-Intel/
                                   B (Title) of the configured Google Sheet.
                                   filter_ledger() drops items whose URL is in
                                   the ledger OR whose title is similar
-                                  (difflib ≥ 0.85) to a previously-sent title —
+                                  (difflib ≥ 0.75) to a previously-sent title —
                                   catches Google News RSS redirect URLs that
                                   change between runs for the same article.
                                     ↓
    6. Date filter                filter_recent_news()
                                   /{current_year}/ in URL → keep
-                                  Else: Tavily metadata → HTML <meta> →
+                                  Else: RSS pubDate metadata → HTML <meta> →
                                     snippet regex → drop if older than 7 days
                                   Aggregator/roundup pages always rejected.
                                   Most expensive step (HTTP fetches), so it
@@ -168,34 +169,28 @@ names are case-insensitive when reading from the environment.
 
 ---
 
-| Variable                               | Purpose                                                  |
-| -------------------------------------- | -------------------------------------------------------- |
-| `SLACK_WEBHOOK_URL`                    | Incoming webhook for the digest channel                  |
-| `GEMINI_API_KEY`                       | Authentication for Google GenAI SDK                      |
-| `TAVILY_API_KEY`                       | Authentication for Tavily search                         |
-| `GOOGLE_SERVICE_ACCOUNT_JSON`          | Service-account JSON blob for Sheets access (Vercel)     |
-| ****************\_\_\_**************** | **************************\_\_************************** |
+| Variable                      | Purpose                                              |
+| ----------------------------- | ---------------------------------------------------- |
+| `SLACK_WEBHOOK_URL`           | Incoming webhook for the digest channel              |
+| `GEMINI_API_KEY`              | Authentication for Google GenAI SDK                  |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Service-account JSON blob for Sheets access (Vercel) |
 
 ### Optional (with defaults)
 
 ---
 
-| Variable                                   | Default                          | Purpose                                                                  |
-| ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------ |
-| `GEMINI_MODEL`                             | `gemini-2.5-flash-lite`          | Which Gemini model generates the brief                                   |
-| `GOOGLE_SHEET_NAME`                        | `Joveo Intel Logs`               | Spreadsheet name for the URL ledger                                      |
-| `GOOGLE_WORKSHEET_NAME`                    | `Sheet1`                         | Tab name inside the spreadsheet                                          |
-| `TAVILY_MAX_RESULTS`                       | `5`                              | General news results per publisher per run                               |
-| `TAVILY_LINKEDIN_MAX_RESULTS`              | `3`                              | LinkedIn-restricted results per publisher per run                        |
-| `GOOGLE_NEWS_MAX_RESULTS`                  | `3`                              | Google News RSS results per publisher (set `0` to disable)               |
-| `TAVILY_SEARCH_DEPTH`                      | `advanced`                       | Tavily search mode                                                       |
-| `NEWS_LOOKBACK_DAYS`                       | `7`                              | Date window for the lookback filter                                      |
-| `SLACK_RETRIES`                            | `3`                              | Number of Slack post attempts                                            |
-| `SLACK_TIMEOUT`                            | `20`                             | Seconds per Slack request                                                |
-| `TITLE_SIMILARITY_THRESHOLD`               | `0.85`                           | Higher = stricter (fewer dedup drops)                                    |
-| `CRON_SECRET`                              | _(unset)_                        | If set, `/api/cron` requires `Authorization: Bearer <value>`             |
-| `LOG_LEVEL`                                | `INFO`                           | Standard Python logging level                                            |
-| ********************\_******************** | ************\_\_\_\_************ | ********************************\_\_\_\_******************************** |
+| Variable                     | Default                 | Purpose                                                                                                |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GEMINI_MODEL`               | `gemini-2.5-flash-lite` | Which Gemini model generates the brief                                                                 |
+| `GOOGLE_SHEET_NAME`          | `Joveo Intel Logs`      | Spreadsheet name for the URL ledger                                                                    |
+| `GOOGLE_WORKSHEET_NAME`      | `Sheet1`                | Tab name inside the spreadsheet                                                                        |
+| `GOOGLE_NEWS_MAX_RESULTS`    | `5`                     | Per-language RSS result cap. ~7 sub-queries × this = items per publisher pre-dedup. Set `0` to disable |
+| `NEWS_LOOKBACK_DAYS`         | `7`                     | Date window for the lookback filter                                                                    |
+| `SLACK_RETRIES`              | `3`                     | Number of Slack post attempts                                                                          |
+| `SLACK_TIMEOUT`              | `20`                    | Seconds per Slack request                                                                              |
+| `TITLE_SIMILARITY_THRESHOLD` | `0.75`                  | Higher = stricter (fewer dedup drops); lower catches more cross-language duplicates                    |
+| `CRON_SECRET`                | _(unset)_               | If set, `/api/cron` requires `Authorization: Bearer <value>`                                           |
+| `LOG_LEVEL`                  | `INFO`                  | Standard Python logging level                                                                          |
 
 ---
 
@@ -207,8 +202,8 @@ pip install -r requirements.txt
 
 # Configure .env (copy .env.example as a starting point)
 cp .env.example .env
-# ...then fill in SLACK_WEBHOOK_URL, GEMINI_API_KEY, TAVILY_API_KEY, and
-# either GOOGLE_SERVICE_ACCOUNT_JSON or place credentials.json at the repo root.
+# ...then fill in SLACK_WEBHOOK_URL, GEMINI_API_KEY, and either
+# GOOGLE_SERVICE_ACCOUNT_JSON or place credentials.json at the repo root.
 
 # Run the full pipeline once
 python brief.py
@@ -230,7 +225,7 @@ variable.
 ## Production deployment (Vercel)
 
 1. Push the repo to a Vercel project.
-2. Set environment variables in the Vercel dashboard (at minimum the four
+2. Set environment variables in the Vercel dashboard (at minimum the three
    required keys above; set `CRON_SECRET` to protect the cron endpoint).
 3. The cron schedule in `vercel.json` registers automatically.
 4. Verify with `curl https://<your-app>.vercel.app/api/health`.
@@ -263,10 +258,12 @@ before Gemini saw it" failures.
 
 ### Title-similarity dedup
 
-Same story across multiple outlets used to burn 3+ slots in the digest.
-A second dedup pass uses `difflib.SequenceMatcher` on normalized titles
-with a configurable threshold (default `0.85`) so duplicate stories
-collapse to one item.
+Same story across multiple outlets — and increasingly, across languages —
+used to burn 3+ slots in the digest. A second dedup pass uses
+`difflib.SequenceMatcher` on normalized titles with a configurable
+threshold (default `0.75`, lowered from `0.85` to catch cross-language
+title variants of the same story) so duplicate stories collapse to one
+item.
 
 ### Sent URLs persist only after a successful Slack post
 
@@ -274,32 +271,21 @@ If Slack delivery fails, no URLs are written to the Sheet. The next run
 can therefore retry the same items rather than treating them as already
 sent.
 
-### Multilingual Tavily query
+### Per-language Google News RSS as the sole source
 
-The Tavily query string covers layoff/insolvency/hiring/partnership
-phrases in eight languages so European publishers (Joblift, Stellenanzeigen,
-Pracuj.pl, etc.) surface non-English coverage that English-only queries
-miss.
-
-### LinkedIn coverage without scraping
-
-Direct scraping of LinkedIn would violate ToS and get IPs banned within
-hours. Instead, the bot runs a second Tavily query per publisher restricted
-to `site:linkedin.com/posts`, `/pulse`, and `/company` paths. Tavily makes
-the actual outbound request, so the bot's IP is never exposed to LinkedIn.
-This catches public LinkedIn announcements (CEO posts, company-page news,
-public articles) without any auth-walled content. The dedup step collapses
-any overlap when the same story is also covered by mainstream press.
-
-### Cross-source redundancy via Google News RSS
-
-Tavily is the primary news source, but a single search vendor is a single
-point of failure. Google News RSS is queried in parallel as a free
-redundancy layer (no API key required) — different ranking and indexing
-than Tavily, so it catches stories Tavily misses and vice versa. Results
-collapse with Tavily's via the same title-similarity dedup, so duplicates
-across the two sources don't burn slots in the digest. Set
-`GOOGLE_NEWS_MAX_RESULTS=0` to disable if needed.
+Google News RSS is free, has no API key, and exposes Google's full news
+index — strong enough on its own that the prior paid Tavily layer (and
+its dedicated LinkedIn-restricted query) was removed in favor of a single
+multilingual RSS strategy. For each publisher we fire one sub-query per
+supported language (EN / DE / FR / ES / IT / NL / PL), each pinned to
+that locale via Google News' `hl` / `gl` / `ceid` parameters and using
+a native-tongue keyword boolean. This surfaces local-press coverage of
+European publishers (Joblift, Stellenanzeigen, Pracuj.pl, etc.) that an
+English-only query would silently miss. Because the search is free, the
+extra fan-out has no per-call cost; cross-language duplicates of the
+same story collapse downstream via title-similarity dedup. Set
+`GOOGLE_NEWS_MAX_RESULTS=0` to disable RSS entirely (the pipeline will
+then have no news source — useful only for testing).
 
 ---
 
