@@ -135,8 +135,8 @@ _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
 _INVISIBLE_CATEGORIES = {"Cc", "Cf"}
 
 def _sanitize_url(url: str) -> str:
-    cleaned = "".join(c for c in url if unicodedata.category(c) not in _INVISIBLE_CATEGORIES)
-    return cleaned.strip()
+    cleaned = "".join(c for c in url if unicodedata.category(c) not in _INVISIBLE_CATEGORIES)
+    return cleaned.strip()
 
 
 # Per-language RSS query specs. Each entry pairs a region-targeted set of
