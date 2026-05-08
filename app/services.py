@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -125,6 +126,18 @@ def filter_ledger(
 # ── Google News RSS news fetch (sole source) ─────────────────────────────────
 
 _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
+
+# Google News redirect URLs occasionally embed soft hyphens (U+00AD) and other
+# invisible Unicode in the base64 payload. Slack's <URL|label> parser drops the
+# whole hyperlink when it sees them, leaving the raw URL visible in the digest.
+# Strip Unicode "control" (Cc) and "format" (Cf) categories — soft hyphens,
+# zero-width spaces, BOMs, and ASCII control bytes all live here.
+_INVISIBLE_CATEGORIES = {"Cc", "Cf"}
+
+def _sanitize_url(url: str) -> str:
+    cleaned = "".join(c for c in url if unicodedata.category(c) not in _INVISIBLE_CATEGORIES)
+    return cleaned.strip()
+
 
 # Per-language RSS query specs. Each entry pairs a region-targeted set of
 # Google News parameters (hl/gl/ceid drive language + region of results) with
@@ -248,7 +261,7 @@ def fetch_google_news_rss(publishers: list[str], settings: Settings) -> list[dic
 
                     all_results.append({
                         "title": title_el.text or "",
-                        "url": link_el.text or "",
+                        "url": _sanitize_url(link_el.text or ""),
                         "content": (desc_el.text or "") if desc_el is not None else "",
                         "published_date": published_iso,
                     })
