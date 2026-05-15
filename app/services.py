@@ -264,6 +264,7 @@ def fetch_google_news_rss(publishers: list[str], settings: Settings) -> list[dic
                         "url": _sanitize_url(link_el.text or ""),
                         "content": (desc_el.text or "") if desc_el is not None else "",
                         "published_date": published_iso,
+                        "publisher": pub,
                     })
                     count += 1
                     if count >= settings.google_news_max_results:
@@ -483,6 +484,96 @@ def normalize_title(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
 
 
+# Event-category buckets used by the story-signature dedup pass. Different
+# outlets covering the same event ("LinkedIn 5% layoff") often word headlines
+# differently enough to slip past title similarity (e.g. "Microsoft-owned
+# LinkedIn slashes staff" vs "LinkedIn to announce job cuts"). Collapsing on
+# (publisher, category) catches them. Buckets are intentionally a subset of
+# CRITICAL_KEYWORDS — only the events where cross-outlet duplication is common.
+_EVENT_CATEGORIES: list[tuple[str, tuple[str, ...]]] = [
+    ("layoffs", (
+        "lay off", "laying off", "layoffs", "lays off", "mass layoff", "mass layoffs",
+        "job cuts", "workforce reduction", "staff cuts",
+        "stellenabbau", "personalabbau", "massenentlassungen", "entlassungen",
+        "licenciements", "suppressions de postes", "plan social",
+        "despidos", "recortes de personal", "reducciones de plantilla",
+        "licenziamenti",
+        "ontslagen", "massaontslag",
+        "zwolnienia", "redukcja zatrudnienia",
+    )),
+    ("bankruptcy", (
+        "insolvency", "insolvent", "bankruptcy", "bankrupt",
+        "files for chapter", "chapter 11", "chapter 7",
+        "liquidation", "receivership", "administration",
+        "insolvenz", "insolvenzantrag", "pleite", "zahlungsunfähig",
+        "faillite", "redressement judiciaire", "cessation de paiements",
+        "liquidation judiciaire",
+        "quiebra", "concurso de acreedores", "insolvencia",
+        "fallimento", "amministrazione straordinaria",
+        "faillissement",
+        "bankructwo", "upadłość", "likwidacja",
+    )),
+    ("shutdown", (
+        "shuts down", "shutting down", "shut down",
+        "ceases operations", "ceasing operations", "cease operations",
+        "closes doors", "closes its doors",
+        "going out of business", "going under",
+        "winds down", "winding down",
+        "exits market", "pulls out of",
+        "geschäftsaufgabe", "betriebsschließung",
+        "cessation d'activité",
+        "cesa actividad",
+        "cessa l'attività",
+        "bedrijfssluiting",
+    )),
+    ("acquisition", (
+        "acquired by", "acquires", "acquisition of",
+        "merger with", "merges with", "merges into",
+        "taken private", "sells to",
+        "übernahme", "fusion",
+        "rachat",
+        "fusión",
+        "acquisizione", "fusione",
+        "overname", "fusie",
+        "przejęcie", "fuzja",
+    )),
+    ("funding", (
+        "series a", "series b", "series c", "series d", "series e",
+        "ipo", "goes public", "files to go public",
+    )),
+    ("exec_change", (
+        "ceo resigns", "ceo steps down", "ceo departs", "ceo replaced",
+        "ceo to step down", "ceo fired", "ceo ousted",
+        "founder departs", "founder steps down", "co-founder departs",
+        "president resigns", "cfo resigns", "cfo steps down",
+        "tritt zurück", "rücktritt",
+        "démissionne", "démission",
+        "dimite", "dimisión",
+        "si dimette", "dimissioni",
+        "treedt af", "stapt op",
+        "rezygnuje", "ustępuje",
+    )),
+    ("legal", (
+        "class action", "lawsuit", "files suit", "sued for",
+        "regulatory fine", "ftc investigation", "doj investigation",
+        "under investigation", "antitrust", "settlement reached",
+        "subpoena",
+    )),
+    ("security", (
+        "data breach", "security breach", "ransomware attack",
+        "data leak", "credentials leaked",
+    )),
+]
+
+
+def _event_category(item: dict) -> str | None:
+    text = (item.get("title", "") + " " + item.get("content", "")).lower()
+    for category, keywords in _EVENT_CATEGORIES:
+        if any(kw in text for kw in keywords):
+            return category
+    return None
+
+
 def deduplicate_news(results: list[dict], settings: Settings) -> list[dict]:
     # First pass: drop exact URL duplicates. Critical items appear earlier in
     # the input list, so URL-first preserves them.
@@ -517,7 +608,24 @@ def deduplicate_news(results: list[dict], settings: Settings) -> list[dict]:
         kept_titles.append(title_norm)
         deduped.append(item)
 
-    return deduped
+    # Third pass: story-signature dedup. SequenceMatcher misses cases where
+    # outlets paraphrase the same event with little token overlap ("LinkedIn
+    # confirms 5% cut" vs "Microsoft-owned LinkedIn slashes staff"). Collapse
+    # on (publisher, event-category) so one event yields one item. Items
+    # without a recognized event category pass through unchanged.
+    final: list[dict] = []
+    seen_signatures: set[tuple[str, str]] = set()
+    for item in deduped:
+        category = _event_category(item)
+        publisher = (item.get("publisher") or "").lower()
+        if category and publisher:
+            signature = (publisher, category)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+        final.append(item)
+
+    return final
 
 
 # ── Gemini brief generation ──────────────────────────────────────────────────
@@ -598,6 +706,13 @@ RULES:
 - One sentence each
 - Each selected item MUST be primarily about a publisher in the ALLOWED
   PUBLISHERS list above. If no items qualify, return fewer than 5 — or none.
+- DEDUPLICATION (CRITICAL): If multiple items report the same underlying event
+  for the same publisher (e.g. several outlets covering one layoff
+  announcement, one acquisition, one funding round, one executive departure),
+  include ONLY ONE — prefer the most authoritative source, most recent, or
+  most detailed. NEVER fill multiple output slots with paraphrases of the
+  same story. If after deduping you have fewer than 5 distinct events,
+  output fewer items rather than padding with duplicates.
 
 STRICT OUTPUT RULES:
 - Output MUST start directly with: :satellite_antenna: *Joveo Publisher Intel*
